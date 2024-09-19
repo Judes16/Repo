@@ -1,0 +1,901 @@
+---
+title: "EMail_Marketing"
+output: html_document
+date: "2024-09-18"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Data Dictionary
+
+
+Variable                               |                         Description
+--------------                         |                        ------------------------------------
+Customer_ID                            | Customer identification number
+recency                                | Months since last purhcase before the marketing campaign
+purchase_segment                       | Categorisation for the purhase amount in the past year before the marketing campaign
+purchase                               | Actual purchase in the past year before the marketing campaign
+mens                                   | whether the customer purchased men’s merchandise in the past year before the marketing campaign (1 = purchased, 0 = not)
+womens                                 | whether the customer purchased women’s merchandise in the past year before the marketing campaign (1= purchased, 0 = not)
+zip_area                               | categorisation of zip code as Urban, Suburban, or Rural
+new_customer                           | whether the customer is new in the past year or s/he is an existing customer (1 = new customer, 0 = existing customer) 
+channel                                | categorisation of the channels the customer purchased from in the past year.
+email_segment                          | e-mail campaign the customer received
+age                                    | age of the customer in years
+dependent                              | whether the customer has a dependent or not (1 = yes; 0 = no)
+account                                | whether the customer has an account or not (1 = yes; 0 = no)
+employed                               | whether the customer has a permenant job (1 = yes; 0 = no)
+phone                                  | whether the customer registered his/her phone or not (1 = yes; 0 = no)
+delivery                               | categorisation for the delivery address (1 = home; 2 = work; 3 = multiple)
+marriage                               | marital status (1=married, 2=single, 0 = others)
+payment_card                           | whether the customer registered a credit card for payment in the past year (1 = yes; 0 = no)
+spend                                  | total amount spent in the following two weeks period
+visit                                  | 1: the customer visited the shop in the following two weeks period; 0: the customer did not visit the shop in the following two weeks period.
+
+
+# Data Preprocessing
+
+```{r}
+#Load ggplot2 to plot graphs
+library(ggplot2)
+#Load gridExtra to arrange graphs
+library(gridExtra)
+#Load tidyverse
+library (tidyverse)
+#Load corrplot to plot correlation plots
+library(corrplot)
+# Load caTools package for data partitioning
+library(caTools)
+# Load rJava and FSelector package for feature selection
+library(rJava)
+library(FSelector)
+# Load e1071 package for SVM model
+library(e1071)
+# Load Random Forest package for Random Forest model
+library(randomForest)
+# Load party package for Decision Tree
+library(party)
+# Load MASS package for Linear Discriminant Analysis
+library(MASS)
+# Load caret package for computing Confusion matrix
+library(caret)
+# Load pROC package for ROC chart
+library(pROC)
+# Load CustomerScoringMetrics package for gain chart
+library(CustomerScoringMetrics)
+# Load tree package for pruning
+library(tree)
+# Load car package for multicollinearity testing
+library(car)
+# Load rpart.plot to plot feature importance
+library(rpart.plot)
+set.seed(123)
+```
+
+### Importing Data & Examining Dataset 
+
+```{r}
+# Reading and checking summary/structure of data set for a quick overall understanding
+df <- read_csv('Email_Marketing_data.csv')
+summary(df)
+str(df)
+```
+
+### Checking NaN value in each column 
+
+```{r}
+cbind(
+lapply(
+lapply(df, is.na)
+, sum)
+)
+# calculating percentage of missing values
+percentage = mean(is.na(df)) * 100
+print ("percentage of missing values")
+print (percentage)
+```
+
+### Converting Age into Categorical Variable 
+
+```{r}
+# Create an empty list to store the categories 
+myList <- list()
+
+# Running loop to check age and put in categories 
+for (value in df$age) {
+if (0<= value & value<20){
+myList <- append(myList,"below 20")
+} else if (20<= value && value<30) {
+myList <- append(myList,"20-30")
+} else if (30<= value && value<40) {
+myList <- append(myList,"30-40")
+} else if (40<= value && value<50){
+myList <- append(myList,"40-50")
+} else if (50<= value && value<60){
+myList <- append(myList,"50-60")
+} else{
+myList <- append(myList,"60 & above")
+}
+}
+# adding a new column and adding the data to dataframe
+df$age_group <- myList
+```
+
+### Fixing column data types and removing NaN values
+
+```{r}
+drop <- c("Customer_ID","payment_card","delivery","phone","account","age") # list of columns to drop 
+df_new <- df[,!(names(df) %in% drop)] #dropping the columns and saving it in new dataframe 
+df_new <- apply(df_new,2,as.character)# to fix data type issue of age_group column 
+df_nona <- data.frame(df_new) # converting it back to dataframe from matrix 
+df_nona <- na.omit(df_nona) # removing NaN values 
+```
+
+### Converting Column to factor
+
+```{r}
+df_nona <- df_nona %>%
+# Save categorical features as factors
+mutate_at(c("purchase_segment","zip_area", "new_customer", "channel","email_segment","employed","marriage","visit","age_group","mens","womens","recency","dependent"),
+as.factor)
+# converting purchase & spend to real 
+df_nona$purchase <- as.numeric(df_nona$purchase)
+df_nona$spend <- as.numeric(df_nona$spend)
+df_nona <- na.omit(df_nona)
+str(df_nona)
+```
+
+### Creating dataframe where visit = 1
+
+```{r}
+#Filtering data to only those customers who visited the store
+df_nona.visited <- filter(df_nona, visit ==1)
+df_nona.email <- filter(df_nona.visited, email_segment != "No E-Mail")
+df_nona.notvisited <- filter(df_nona, visit ==0, email_segment != "No E-Mail")
+
+```
+
+# Exploratory Data Analysis
+
+## Plotting Features Against Visit
+
+### Marriage vs Visits
+
+```{r}
+#Marriage vs Visit
+
+visit.cnt.marriage <- df_nona.email %>% group_by(marriage) %>% summarise(Total_Visits = length(visit))
+
+#Plotting marriage vs visit
+
+ggplot(visit.cnt.marriage,                    
+       aes(x = marriage,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Recency vs Visits
+
+```{r}
+
+df_nona.email$recency <- factor(df_nona.email$recency, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"))
+
+visit.cnt.recency <- df_nona.email %>% group_by(recency) %>% summarise(Total_Visits = length(visit))
+
+#Plotting recency vs visit
+
+ggplot(visit.cnt.recency,                    
+       aes(x = recency,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Purchase Segments vs Spend/Visits
+
+```{r}
+
+visit.cnt.purseg <- df_nona.email %>% group_by(purchase_segment) %>% summarise(Total_Visits = length(visit))
+
+#Plotting purchase_segment vs visit
+
+ggplot(visit.cnt.purseg,                    
+       aes(x = purchase_segment,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Mens vs Visits
+
+```{r}
+
+visit.cnt.mens <- df_nona.email %>% group_by(mens) %>% summarise(Total_Visits = length(visit))
+
+#Plotting mens vs visit
+
+ggplot(visit.cnt.mens,                    
+       aes(x = mens,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Womens vs Visits
+
+```{r}
+
+visit.cnt.womens <- df_nona.email %>% group_by(womens) %>% summarise(Total_Visits = length(visit))
+
+#Plotting womens vs visit
+
+ggplot(visit.cnt.womens,                    
+       aes(x = womens,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Zip Area vs Visits
+
+```{r}
+
+visit.cnt.zip <- df_nona.email %>% group_by(zip_area) %>% summarise(Total_Visits = length(visit))
+
+#Plotting zip_area vs visit
+
+ggplot(visit.cnt.zip,                    
+       aes(x = zip_area,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### New Customer vs Visits
+
+```{r}
+
+visit.cnt.new <- df_nona.email %>% group_by(new_customer) %>% summarise(Total_Visits = length(visit))
+
+#Plotting new_customer vs visit
+
+ggplot(visit.cnt.new,                    
+       aes(x = new_customer,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Channels vs Visits
+
+```{r}
+
+visit.cnt.channel <- df_nona.email %>% group_by(channel) %>% summarise(Total_Visits = length(visit))
+
+#Plotting channel vs visit
+
+ggplot(visit.cnt.channel,                    
+       aes(x = channel,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Dependent vs Visits
+
+```{r}
+
+visit.cnt.depen <- df_nona.email %>% group_by(dependent) %>% summarise(Total_Visits = length(visit))
+
+#Plotting dependent vs visit
+
+ggplot(visit.cnt.depen,                    
+       aes(x = dependent,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Employed vs Visits
+
+```{r}
+
+visit.cnt.employed <- df_nona.email %>% group_by(employed) %>% summarise(Total_Visits = length(visit))
+
+#Plotting employed vs visit
+
+ggplot(visit.cnt.employed,                    
+       aes(x = employed,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Age Group vs Visits
+
+```{r}
+
+visit.cnt.agegrp <- df_nona.email %>% group_by(age_group) %>% summarise(Total_Visits = length(visit))
+
+#Plotting age_group vs visit
+
+ggplot(visit.cnt.agegrp,                    
+       aes(x = age_group,
+           y = Total_Visits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+## Plotting Variables Against Non-Visits
+
+### Recency vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.marriage <- df_nona.notvisited %>% group_by(marriage) %>% summarise(Total_NonVisits = length(visit))
+
+
+#Plotting marriage vs Non visit
+
+ggplot(nonvisit.cnt.marriage,                    
+       aes(x = marriage,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+```
+
+### Recency vs Non-Visits
+
+```{r}
+
+df_nona.notvisited$recency <- factor(df_nona.notvisited$recency, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"))
+
+nonvisit.cnt.recency <- df_nona.notvisited %>% group_by(recency) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting recency vs Non visit
+
+ggplot(nonvisit.cnt.recency,                    
+       aes(x = recency,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Purchase Segments vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.purseg <- df_nona.notvisited %>% group_by(purchase_segment) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting purchase_segment vs Non visit
+
+ggplot(nonvisit.cnt.purseg,                    
+       aes(x = purchase_segment,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+```
+
+### Mens vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.mens <- df_nona.notvisited %>% group_by(mens) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting mens vs Non visit
+
+ggplot(nonvisit.cnt.mens,                    
+       aes(x = mens,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Womens vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.womens <- df_nona.notvisited %>% group_by(womens) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting womens vs Non visit
+
+ggplot(nonvisit.cnt.womens,                    
+       aes(x = womens,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Zip Area vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.zip <- df_nona.notvisited %>% group_by(zip_area) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting zip_area vs Non visit
+
+ggplot(nonvisit.cnt.zip,                    
+       aes(x = zip_area,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### New Customer vs Non-Visits
+
+
+```{r}
+
+nonvisit.cnt.new <- df_nona.notvisited %>% group_by(new_customer) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting new_customer vs Non visit
+
+ggplot(nonvisit.cnt.new,                    
+       aes(x = new_customer,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+```
+
+### Channels vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.channel <- df_nona.notvisited %>% group_by(channel) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting channel vs Non visit
+
+ggplot(nonvisit.cnt.channel,                    
+       aes(x = channel,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Dependent vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.depen <- df_nona.notvisited %>% group_by(dependent) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting dependent vs Non visit
+
+ggplot(nonvisit.cnt.depen,                    
+       aes(x = dependent,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+```
+
+### Employed vs Non-Visits
+
+```{r}
+
+nonvisit.cnt.employed <- df_nona.notvisited %>% group_by(employed) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting employed vs Non visit
+
+ggplot(nonvisit.cnt.employed,                    
+       aes(x = employed,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+### Age Group vs Non-Visits
+
+```{r}
+
+levels(df_nona.notvisited$age_group)
+
+```
+
+```{r}
+
+df_nona.notvisited$age_group <- factor(df_nona.notvisited$age_group, levels = c("below 20", "20-30", "30-40", "40-50", "50-60", "60 & above"))
+
+nonvisit.cnt.agegrp <- df_nona.notvisited %>% group_by(age_group) %>% summarise(Total_NonVisits = length(visit))
+
+#Plotting age_group vs visit
+
+ggplot(nonvisit.cnt.agegrp,                    
+       aes(x = age_group,
+           y = Total_NonVisits)) + 
+  geom_bar(stat = "identity")
+
+
+```
+
+```{r}
+#Removing spend column from analysis as customer spending chronologically occurs after spending and as such, does not impact the visit variable.
+
+df_nona$spend <- NULL
+```
+
+# Modelling & Evaluation
+
+## Splitting data into train and test 
+
+```{r}
+# Partition the visit data into training and test sets with training ratio of 0.7
+split = sample.split(df_nona$visit, SplitRatio = 0.7)
+# Generate the training and test sets by sub-setting the visit data records from datafile_removed
+training_data = subset(df_nona, split == TRUE)
+test_data = subset(df_nona, split == FALSE)
+```
+
+### Checking Logistic Fit
+
+```{r}
+
+#Running Logistic Regression (Logistic regression can make a prediction about a categorical variable versus a continuous one and is therefore, used to estimate the relationship between a dependent variable and one or more independent variables)
+             
+logistic_fit_1 <- glm(df_nona$visit ~ df_nona$recency+df_nona$purchase_segment+df_nona$mens+df_nona$womens+df_nona$zip_area+df_nona$new_customer+df_nona$channel+df_nona$age_group+df_nona$dependent+df_nona$employed+df_nona$marriage,
+                      data = training_data,
+                      family = "binomial")
+
+logistic_fit_1
+
+#Calculating Multicollinearity
+vif(logistic_fit_1)
+
+#creating a vector of VIF Values
+vif_values <- vif(logistic_fit_1)
+
+#create horizontal bar chart to display each VIF value
+barplot(vif_values, main = "VIF Values", horiz = TRUE, col = "steelblue") 
+
+#adding a vertical line at 5 as after 5 there is severe correlation
+abline(v = 5, lwd = 3, lty = 2)
+
+```
+
+### Checking Information Gain 
+
+```{r}
+# Compute information gain values of the variables
+variable_weights <- information.gain(visit ~., training_data)
+# Print weights
+print(variable_weights)
+```
+
+### Plotting Information Gain 
+
+```{r}
+# Save a copy of the variable_weights
+IG <- variable_weights
+
+# Add row names as a column to keep them during ordering
+IG$attr <- rownames( variable_weights)
+
+# Arrange the variable_weights in decreasing order 
+IG <- arrange(IG, -IG$attr_importance)
+
+# Plot the weight
+barplot(IG$attr_importance, names = IG$attr, las = 2, ylim = c(0, 0.10))
+```
+
+## Logistic Regression 
+
+```{r}
+default_glm_mod = train(
+  form = visit ~ .,
+  data = training_data,
+  trControl = trainControl(method = "cv", number = 10),
+  method = "glm",
+  family = "binomial"
+)
+```
+
+```{r}
+# predicting the test set observations
+logitModelPred <- predict(default_glm_mod, test_data, type = "prob")
+logitModelPred <- logitModelPred[,2]
+```
+
+```{r}
+# plot of probabilities
+plot(logitModelPred, 
+     main = "Scatterplot of Probabilities of Default (test data)", 
+     xlab = "Customer", ylab = "Predicted Probability of Visit")
+```
+
+### Confusion Matrix at 50% Cut-Off Probability
+
+```{r}
+# setting the cut-off probablity
+classify50 <- ifelse(logitModelPred > 0.5,"1","0")
+
+# ordering the levels
+classify50 <- ordered(classify50, levels = c("1", "0"))
+test_data$visit <- ordered(test_data$visit, levels = c("1", "0"))
+
+# confusion matrix
+cm <- table(Predicted = classify50, Actual = test_data$visit)
+cm
+```
+
+```{r}
+confusionMatrix(cm)
+```
+
+```{r}
+# Use confusionMatrix to print the performance of the new logistic regression model
+confusionMatrix(classify50, test_data$visit,positive='1', mode = "prec_recall")
+```
+
+## SVM
+
+```{r}
+# prepare model 
+svm_model <- svm(visit ~ . , data = training_data, kernel = "radial", scale = TRUE, probability = TRUE)
+# Print svm_model
+print(svm_model)
+```
+
+```{r}
+# Predict the test data 
+svm_prediction<- predict(svm_model, test_data, probability=TRUE)
+
+# Use confusionMatrix to print the performance of SVM model
+confusionMatrix(svm_prediction, test_data$visit, 
+                positive='1', mode = "prec_recall")
+```
+
+## Decision Tree 
+
+```{r}
+ctrl  <- trainControl(method  = "cv",number  = 10) #, summaryFunction = multiClassSummary
+# fit the model
+model_DT = train(visit ~ ., 
+                  data= training_data, 
+                  method="rpart",
+                  trControl = ctrl,
+                  tuneLength = 30)
+# view decition tree model 
+print(model_DT)
+```
+
+```{r}
+# Predict the test data 
+DT_prediction <- predict(model_DT, test_data)
+
+# Use confusionMatrix to print the performance of Decision Tree model
+confusionMatrix(DT_prediction, test_data$visit,positive='1', mode = "prec_recall")
+```
+
+## Random Forest 
+
+```{r}
+RF_model <- randomForest(visit ~.,training_data)
+print(RF_model)
+```
+
+```{r}
+# Predict the test data 
+rf_prediction <- predict(RF_model, test_data, probability=TRUE)
+
+# Use confusionMatrix to print the performance of rf model
+confusionMatrix(rf_prediction, test_data$visit, 
+                positive='1', mode = "prec_recall")
+```
+
+### Check Feature Importance 
+
+```{r}
+importance(RF_model)
+```
+
+```{r}
+
+# Obtain predicted probabilities for the new SVM model svm_model
+svm_probability <- attr(svm_prediction, "probabilities")
+
+# Obtain predicted probabilities for the new Random Forest model - RF_model
+RF_probability <- predict(RF_model, test_data, type = "prob")
+
+```
+
+## Performance Metrics : Receiver Operating Characteristic(ROC)
+
+```{r}
+
+# Return some performance metrics of the new predicted SVM model
+svm_ROC <- roc(test_data$visit, svm_probability[, 1])
+
+```
+
+```{r}
+
+# Return some performance metrics of the new predicted Random Forest model
+RF_ROC <- roc(test_data$visit, RF_probability[, 2])
+
+```
+
+```{r}
+
+# Return some performance metrics of the new predicted Logistic Regression model
+LR_ROC <- roc(test_data$visit, logitModelPred)
+
+```
+
+### Plotting ROC Curve
+
+```{r}
+
+# Plot the ROC curve for the Random Forest model and SVM model
+ggroc(list(SVM = svm_ROC, RF = RF_ROC, LR = LR_ROC), 
+      legacy.axes=TRUE) + 
+    xlab("FPR") + ylab("TPR") +
+    geom_abline(intercept = 0, slope = 1,
+                color = "darkgrey", linetype = "dashed")
+
+```
+
+## Calculating Area Under The Curve for the Models
+
+```{r}
+
+# Calculate the area under the curve (AUC) for new SVM model
+auc(svm_ROC)
+
+```
+
+```{r}
+
+#Calculate the area under the curve (AUC) for new Random Forest model
+auc(RF_ROC)
+
+```
+
+```{r}
+
+# Calculate the area under the curve (AUC) for new Logistic Regression model
+auc(LR_ROC)
+
+```
+
+```{r}
+# Provide probabilities for the outcome of interest and obtain the Gain Chart data for the new predicted SVM model
+svm_GainTable <- cumGainsTable(svm_probability[,2], 
+                               test_data$visit, 
+                               resolution = 1/100)
+
+# Provide probabilities for the outcome of interest and obtain the Gain Chart data for the new predicted Random Forest model
+RF_GainTable <- cumGainsTable(RF_probability[,2], 
+                              test_data$visit, 
+                              resolution = 1/100)
+
+# Provide probabilities for the outcome of interest and obtain the Gain Chart data for the new predicted Logistic Regression model
+LR_GainTable <- cumGainsTable(logitModelPred,  
+                                  test_data$visit,
+                                  resolution = 1/100)
+
+```
+
+### Plotting the Gain Chart for the Models
+
+```{r}
+
+# Plot Gain Chart for the new predicted SVM, Random Forest, and Logistic Regression model
+plot(svm_GainTable[ , 4], 
+     col="red", type="l",    
+     xlab = "Percentage of test instances",
+     ylab="Percentage of Correct Positive Predictions (True Positive Rate)")
+
+lines(RF_GainTable[ , 4], col = "green", type = "l")
+lines(LR_GainTable[,4], col="blue", type="l")
+
+grid(NULL, lwd = 1)
+legend("bottomright",
+       c("SVM", "Random Forest", "LogReg"),
+       fill=c("red","green", "blue"))
+
+```
+
+# Estimating spend for Customer Visits 
+
+## Data Preparation for Regression 
+
+### Dropping irrelevent column and NaN values 
+
+```{r}
+df_reg <- filter(df, visit == 1)
+drop_reg <- c("Customer_ID","payment_card","delivery","phone","account","visit","age_group") # list of columns to drop 
+df_reg_new <- df_reg[,!(names(df_reg) %in% drop_reg)] #dropping the columns and saving it in new dataframe 
+df_reg_no_na <- na.omit(df_reg_new) # removing NaN values 
+```
+
+### Converting column to factor
+
+```{r}
+df_reg_no_na <- df_reg_no_na %>%
+# Save categorical features as factors
+mutate_at(c("purchase_segment","zip_area", "new_customer", "channel","email_segment","employed","marriage","mens","womens","recency","dependent"),
+as.factor)
+# converting purchase to real 
+df_reg_no_na$purchase <- as.numeric(df_reg_no_na$purchase)
+df_reg_no_na$age <- as.integer(df_reg_no_na$age)
+df_reg_no_na$spend <- as.numeric(df_reg_no_na$spend)
+str(df_reg_no_na)
+```
+
+## Splitting data into train and test
+
+```{r}
+# Partition the visit data into training and test sets with training ratio of 0.7
+split = sample.split(df_reg_no_na$spend, SplitRatio = 0.7)
+# Generate the training and test sets by sub-setting the visit data records from datafile_removed
+training_data_reg = subset(df_reg_no_na, split == TRUE)
+test_data_reg = subset(df_reg_no_na, split == FALSE)
+```
+
+### Training Regressor 
+```{r}
+system.time(model1 <- randomForest(
+  formula = spend ~.,
+  data    = training_data_reg,
+   importance=TRUE
+))
+
+model1
+            
+```
+### Plotting feature importance
+
+```{r}
+importance(model1)
+varImpPlot(model1)
+```
+
+### Checking mean square error to evaluate model
+
+```{r}
+# number of trees with lowest MSE
+which.min(model1$mse)
+
+# RMSE of this optimal random forest
+sqrt(model1$mse[which.min(model1$mse)])
+```
+
+### Evaluating model on test data i.e. check root mean square error
+```{r}
+predictions_reg <- predict(model1, test_data_reg[,1:14])
+RMSE <- sqrt(sum((predictions_reg - test_data_reg$spend)^2)/length(predictions_reg))
+print(RMSE)
+```
+
+
+### Saving predictions on test dataset along with actual value
+```{r}
+result <- test_data_reg
+result['prediction']<-  predictions_reg
+
+head(result)
+```
+  
+  
